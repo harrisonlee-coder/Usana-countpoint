@@ -1,2 +1,4 @@
 streamlit
 graphviz
+st-gsheets-connection
+pandas
