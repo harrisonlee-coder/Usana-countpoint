@@ -7,7 +7,7 @@ import pandas as pd
 from streamlit_gsheets import GSheetsConnection
 
 # =========================
-# 1. Member 類別 (邏輯保持不變)
+# 1. Member 類別
 # =========================
 class Member:
     def __init__(self, name, parent=None, side=None, is_clone=False):
@@ -73,7 +73,7 @@ class Member:
                 st.session_state.members[new_right.name] = new_right
 
 # =========================
-# 2. 功能輔助函式 (序列化與雲端同步)
+# 2. 功能輔助函式
 # =========================
 def serialize_members(members_dict):
     return {name: {
@@ -97,24 +97,44 @@ def deserialize_members(data):
 # --- Google Sheets 核心讀寫函數 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
-def save_to_cloud():
+def save_to_cloud(filename):
     try:
+        # 讀取現有所有資料
+        existing_df = conn.read(ttl=0)
+        
+        # 準備新資料
         data_json = json.dumps(serialize_members(st.session_state.members), ensure_ascii=False)
-        df = pd.DataFrame([{"Timestamp": pd.Timestamp.now(), "Data": data_json}])
-        conn.update(data=df)
-        st.toast("✅ 資料已同步至 Google 雲端", icon="🚀")
+        new_row = pd.DataFrame([{
+            "Timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "Filename": filename,
+            "Data": data_json
+        }])
+        
+        # 併入現有資料 (若 Filename 相同，之後讀取會抓最後一筆)
+        updated_df = pd.concat([existing_df, new_row], ignore_index=True)
+        conn.update(data=updated_df)
+        st.toast(f"✅ 存檔 '{filename}' 已同步至雲端", icon="🚀")
     except Exception as e:
         st.error(f"儲存失敗: {e}")
 
-def load_from_cloud():
+def get_cloud_file_list():
     try:
-        # ttl=0 確保每次讀取都是最新版本
         df = conn.read(ttl=0)
-        if not df.empty and "Data" in df.columns:
-            latest_data = df.iloc[-1]["Data"]
-            return deserialize_members(json.loads(latest_data))
-    except Exception:
-        pass # 若讀取失敗（如新試算表），回傳初始值
+        if not df.empty and "Filename" in df.columns:
+            return df["Filename"].unique().tolist()
+    except:
+        pass
+    return []
+
+def load_from_cloud(filename):
+    try:
+        df = conn.read(ttl=0)
+        if not df.empty:
+            # 找到該名稱最後一筆紀錄
+            target_data = df[df["Filename"] == filename].iloc[-1]["Data"]
+            return deserialize_members(json.loads(target_data))
+    except Exception as e:
+        st.error(f"讀取存檔失敗: {e}")
     return {"自己": Member("自己")}
 
 def save_history():
@@ -126,7 +146,17 @@ def save_history():
 # 3. 初始化
 # =========================
 if "members" not in st.session_state:
-    st.session_state.members = load_from_cloud()
+    # 預設載入雲端最後一筆，若無則初始化
+    try:
+        df_init = conn.read(ttl=0)
+        if not df_init.empty:
+            last_json = df_init.iloc[-1]["Data"]
+            st.session_state.members = deserialize_members(json.loads(last_json))
+        else:
+            st.session_state.members = {"自己": Member("自己")}
+    except:
+        st.session_state.members = {"自己": Member("自己")}
+
 if "selected" not in st.session_state:
     st.session_state.selected = "自己"
 if "history" not in st.session_state:
@@ -149,7 +179,7 @@ selected_name = st.sidebar.selectbox("選取操作節點", member_keys, index=me
 st.session_state.selected = selected_name
 selected_node = st.session_state.members[selected_name]
 
-tab1, tab2, tab3, tab4 = st.sidebar.tabs(["➕ 下線", "🔢 分數", "✏️ 編輯", "☁️ 雲端"])
+tab1, tab2, tab3, tab4 = st.sidebar.tabs(["➕ 下線", "🔢 分數", "✏️ 編輯", "☁️ 雲端存檔"])
 
 with tab1:
     c_name = st.text_input("下線名稱")
@@ -205,19 +235,29 @@ with tab3:
         st.rerun()
 
 with tab4:
-    st.subheader("☁️ Google Sheets 同步")
-    st.info("資料將儲存於雲端，手機重啟或換裝置皆可同步。")
-    if st.button("💾 立即同步至雲端", use_container_width=True, type="primary"):
-        save_to_cloud()
+    st.subheader("💾 建立新雲端存檔")
+    save_name = st.text_input("存檔檔案名稱", value="預設進度")
+    if st.button("📤 儲存至雲端", use_container_width=True, type="primary"):
+        save_to_cloud(save_name)
     
-    if st.button("🔄 從雲端重新載入", use_container_width=True):
-        st.session_state.members = load_from_cloud()
-        st.rerun()
+    st.divider()
+    
+    st.subheader("📂 讀取雲端存檔")
+    file_list = get_cloud_file_list()
+    if file_list:
+        target_file = st.selectbox("請選擇存檔", file_list)
+        if st.button("🔄 載入所選進度", use_container_width=True):
+            save_history()
+            st.session_state.members = load_from_cloud(target_file)
+            st.success(f"已成功載入: {target_file}")
+            st.rerun()
+    else:
+        st.write("目前雲端尚無存檔資料。")
 
 # =========================
 # 5. 繪圖
 # =========================
-st.title("📊 直銷組織管理 (雲端同步版)")
+st.title("📊 直銷組織管理 (多檔雲端版)")
 
 def draw_tree(root_member):
     dot = graphviz.Digraph()
