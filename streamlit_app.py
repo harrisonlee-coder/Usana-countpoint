@@ -257,7 +257,7 @@ with tab4:
 # =========================
 # 5. 繪圖
 # =========================
-st.title("📊 直銷組織管理 (多檔雲端版)")
+st.title("📊 直銷組織管理")
 
 def draw_tree(root_member):
     dot = graphviz.Digraph()
