@@ -99,18 +99,13 @@ conn = st.connection("gsheets", type=GSheetsConnection)
 
 def save_to_cloud(filename):
     try:
-        # 讀取現有所有資料
         existing_df = conn.read(ttl=0)
-        
-        # 準備新資料
         data_json = json.dumps(serialize_members(st.session_state.members), ensure_ascii=False)
         new_row = pd.DataFrame([{
             "Timestamp": pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S"),
             "Filename": filename,
             "Data": data_json
         }])
-        
-        # 併入現有資料 (若 Filename 相同，之後讀取會抓最後一筆)
         updated_df = pd.concat([existing_df, new_row], ignore_index=True)
         conn.update(data=updated_df)
         st.toast(f"✅ 存檔 '{filename}' 已同步至雲端", icon="🚀")
@@ -130,7 +125,6 @@ def load_from_cloud(filename):
     try:
         df = conn.read(ttl=0)
         if not df.empty:
-            # 找到該名稱最後一筆紀錄
             target_data = df[df["Filename"] == filename].iloc[-1]["Data"]
             return deserialize_members(json.loads(target_data))
     except Exception as e:
@@ -146,7 +140,6 @@ def save_history():
 # 3. 初始化
 # =========================
 if "members" not in st.session_state:
-    # 預設載入雲端最後一筆，若無則初始化
     try:
         df_init = conn.read(ttl=0)
         if not df_init.empty:
@@ -167,9 +160,18 @@ if "history" not in st.session_state:
 # =========================
 st.sidebar.title("📁 系統管理")
 
-if st.sidebar.button("🔙 Undo (復原上一步)", use_container_width=True):
-    if st.session_state.history:
-        st.session_state.members = deserialize_members(st.session_state.history.pop())
+col1, col2 = st.sidebar.columns(2)
+with col1:
+    if st.button("🔙 Undo", use_container_width=True):
+        if st.session_state.history:
+            st.session_state.members = deserialize_members(st.session_state.history.pop())
+            st.rerun()
+with col2:
+    # --- Reset 功能 ---
+    if st.button("♻️ Reset", use_container_width=True, help="清空所有成員，回到最初狀態"):
+        save_history() # 重設前先存入歷史紀錄，萬一按錯可以 Undo
+        st.session_state.members = {"自己": Member("自己")}
+        st.session_state.selected = "自己"
         st.rerun()
 
 st.sidebar.divider()
@@ -179,7 +181,7 @@ selected_name = st.sidebar.selectbox("選取操作節點", member_keys, index=me
 st.session_state.selected = selected_name
 selected_node = st.session_state.members[selected_name]
 
-tab1, tab2, tab3, tab4 = st.sidebar.tabs(["➕ 下線", "🔢 分數", "✏️ 編輯", "☁️ 雲端存檔"])
+tab1, tab2, tab3, tab4 = st.sidebar.tabs(["➕ 下線", "🔢 分數", "✏️ 編輯", "☁️ 存檔"])
 
 with tab1:
     c_name = st.text_input("下線名稱")
@@ -257,7 +259,7 @@ with tab4:
 # =========================
 # 5. 繪圖
 # =========================
-st.title("📊 直銷組織管理")
+st.title("📊 直銷組織管理 (多檔雲端版)")
 
 def draw_tree(root_member):
     dot = graphviz.Digraph()
