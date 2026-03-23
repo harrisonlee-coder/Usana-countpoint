@@ -30,35 +30,36 @@ class Member:
             return match_score * 0.2
         return 0.0
 
+    # 同步加分：會向上傳遞
     def add_score(self, score):
         if self.name == "9999": return
         self.own += score
         self._check_clone()
-        self._propagate(score)
+        self._propagate_add(score)
 
-    def _propagate(self, score):
+    def _propagate_add(self, score):
         if not self.parent: return
         if self.side == "left":
             self.parent.left_score += score
         else:
             self.parent.right_score += score
         self.parent.own += score
-        self.parent._propagate(score)
+        self.parent._propagate_add(score)
 
+    # 強制同步扣除：修復後的邏輯
     def sub_score_sync(self, score):
         if self.name == "9999": return
-        actual_sub = min(self.own, score)
-        self.own -= actual_sub
-        self._propagate_sub(actual_sub)
+        self.own = max(0, self.own - score)
+        self._propagate_sub_force(score)
 
-    def _propagate_sub(self, score):
+    def _propagate_sub_force(self, score):
         if not self.parent: return
         if self.side == "left":
             self.parent.left_score = max(0, self.parent.left_score - score)
         else:
             self.parent.right_score = max(0, self.parent.right_score - score)
         self.parent.own = max(0, self.parent.own - score)
-        self.parent._propagate_sub(score)
+        self.parent._propagate_sub_force(score)
 
     def _check_clone(self):
         if self.is_clone or self.name == "9999": return
@@ -94,7 +95,6 @@ def deserialize_members(data):
             else: p.right = c
     return temp
 
-# --- Google Sheets 核心讀寫函數 ---
 conn = st.connection("gsheets", type=GSheetsConnection)
 
 def save_to_cloud(filename):
@@ -160,16 +160,15 @@ if "history" not in st.session_state:
 # =========================
 st.sidebar.title("📁 系統管理")
 
-col1, col2 = st.sidebar.columns(2)
-with col1:
+col_undo, col_reset = st.sidebar.columns(2)
+with col_undo:
     if st.button("🔙 Undo", use_container_width=True):
         if st.session_state.history:
             st.session_state.members = deserialize_members(st.session_state.history.pop())
             st.rerun()
-with col2:
-    # --- Reset 功能 ---
-    if st.button("♻️ Reset", use_container_width=True, help="清空所有成員，回到最初狀態"):
-        save_history() # 重設前先存入歷史紀錄，萬一按錯可以 Undo
+with col_reset:
+    if st.button("♻️ Reset", use_container_width=True):
+        save_history()
         st.session_state.members = {"自己": Member("自己")}
         st.session_state.selected = "自己"
         st.rerun()
@@ -198,23 +197,54 @@ with tab1:
 
 with tab2:
     st.subheader("業績調整")
-    val = st.number_input("輸入分數值", min_value=0, step=10)
-    if st.button("➕ 增加分數 (同步向上)", use_container_width=True):
-        save_history()
-        selected_node.add_score(val)
-        st.rerun()
+    val = st.number_input("輸入分數值", min_value=0.0, step=10.0)
     
-    col_sub1, col_sub2 = st.columns(2)
-    with col_sub1:
-        if st.button("➖ 單純減少", use_container_width=True):
+    col_sync_add, col_pure_add = st.columns(2)
+    with col_sync_add:
+        if st.button("➕ 同步加分", use_container_width=True, help="增加自己並同步增加所有上線分數"):
             save_history()
-            selected_node.own = max(0, selected_node.own - val)
+            selected_node.add_score(val)
             st.rerun()
-    with col_sub2:
-        if st.button("📉 同步扣除", use_container_width=True):
+    with col_pure_add:
+        if st.button("🎯 單純加分", use_container_width=True, help="僅增加該成員自己的 Own 分數"):
+            save_history()
+            selected_node.own += val
+            st.rerun()
+
+    col_sub_p, col_sub_pure = st.columns(2)
+    with col_sub_p:
+        if st.button("📉 同步扣除", use_container_width=True, help="減少自己並同步減少上線對應腳位分"):
             save_history()
             selected_node.sub_score_sync(val)
             st.rerun()
+    with col_sub_pure:
+         if st.button("➖ 單純減分", use_container_width=True, help="僅減少該成員自己的 Own 分數"):
+            save_history()
+            selected_node.own = max(0, selected_node.own - val)
+            st.rerun()
+            
+    st.divider()
+    st.subheader("💰 對碰銷帳")
+    match_mode = st.radio("對碰單位", ["美金 (USD)", "分數 (Points)"], horizontal=True)
+    match_val = st.number_input(f"請輸入要對碰的{match_mode[:2]}", min_value=0.0, step=10.0)
+    points_to_deduct = match_val * 5 if match_mode == "美金 (USD)" else match_val
+    
+    if st.button("⚖️ 執行對碰銷帳", use_container_width=True, type="primary"):
+        if selected_node.left_score >= points_to_deduct and selected_node.right_score >= points_to_deduct:
+            save_history()
+            selected_node.left_score -= points_to_deduct
+            selected_node.right_score -= points_to_deduct
+            st.success(f"對碰成功！已扣除左右各 {points_to_deduct} 分")
+            st.rerun()
+        else:
+            st.error(f"分數不足！需要左右各 {points_to_deduct} 分才能對碰。")
+
+    st.divider()
+    if st.button("🧹 全員分數歸零", use_container_width=True):
+        save_history()
+        for m in st.session_state.members.values():
+            m.own = m.left_score = m.right_score = 0
+        st.rerun()
 
 with tab3:
     st.subheader("📝 名稱管理")
@@ -237,29 +267,23 @@ with tab3:
         st.rerun()
 
 with tab4:
-    st.subheader("💾 建立新雲端存檔")
-    save_name = st.text_input("存檔檔案名稱", value="預設進度")
+    st.subheader("💾 雲端管理")
+    save_name = st.text_input("新存檔名稱", value="預設進度")
     if st.button("📤 儲存至雲端", use_container_width=True, type="primary"):
         save_to_cloud(save_name)
-    
     st.divider()
-    
-    st.subheader("📂 讀取雲端存檔")
     file_list = get_cloud_file_list()
     if file_list:
-        target_file = st.selectbox("請選擇存檔", file_list)
-        if st.button("🔄 載入所選進度", use_container_width=True):
+        target_file = st.selectbox("讀取舊存檔", file_list)
+        if st.button("🔄 載入進度", use_container_width=True):
             save_history()
             st.session_state.members = load_from_cloud(target_file)
-            st.success(f"已成功載入: {target_file}")
             st.rerun()
-    else:
-        st.write("目前雲端尚無存檔資料。")
 
 # =========================
 # 5. 繪圖
 # =========================
-st.title("📊 直銷組織管理 (多檔雲端版)")
+st.title("📊 直銷管理 (功能優化版)")
 
 def draw_tree(root_member):
     dot = graphviz.Digraph()
@@ -270,17 +294,14 @@ def draw_tree(root_member):
         curr = stack.pop()
         if curr in visited: continue
         visited.add(curr)
-        
         if curr.name.startswith("9999"):
             fill, font, name_label = "#EF4444", "white", "已作廢 (9999)"
         else:
             fill = "#3B82F6" if curr.name == st.session_state.selected else ("#E2E8F0" if curr.is_clone else "#1E293B")
             font = "black" if curr.is_clone else "white"
             name_label = f"{curr.name}{' (店)' if curr.is_clone else ''}"
-
-        label = (f"{{ {name_label} | Own: {curr.own} | "
-                 f"{{ L: {curr.left_score} | R: {curr.right_score} }} | 💰 USD: ${curr.commission:.1f} }}")
-        
+        label = (f"{{ {name_label} | Own: {curr.own:.0f} | "
+                 f"{{ L: {curr.left_score:.0f} | R: {curr.right_score:.0f} }} | 💰 USD: ${curr.commission:.1f} }}")
         dot.node(str(id(curr)), label=label, fillcolor=fill, fontcolor=font)
         if curr.left: dot.edge(str(id(curr)), str(id(curr.left)), label="L"); stack.append(curr.left)
         if curr.right: dot.edge(str(id(curr)), str(id(curr.right)), label="R"); stack.append(curr.right)
